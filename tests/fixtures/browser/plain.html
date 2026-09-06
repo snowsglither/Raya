@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+<head><title>Page simple</title></head>
+<body>
+  <h1>Page de test simple</h1>
+  <button id="btn1">Cliquez ici</button>
+  <input type="text" placeholder="Votre nom" id="name-field" />
+  <script>
+    document.getElementById('btn1').addEventListener('click', function () {
+      document.getElementById('btn1').innerText = 'Cliqué';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAYA</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="app" data-presence="idle">
+    <div class="conn-banner" id="conn-banner">Reconnecting to RAYA…</div>
+
+    <!-- BASE LAYER: minimal by default — presence + input only. -->
+    <div class="stage" id="stage">
+      <div class="brand">RAYA</div>
+      <div class="orb-wrap">
+        <div class="orb-ring"></div>
+        <div class="orb"></div>
+      </div>
+      <div class="status-line">
+        <div class="status-word" id="status-word">Online</div>
+        <div class="status-sub" id="status-sub"></div>
+      </div>
+      <div class="input-row">
+        <button class="icon-btn" id="mic-btn" title="Speak" aria-label="Speak">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 19v3"/></svg>
+        </button>
+        <input id="text-input" type="text" placeholder="Ask RAYA anything…" autocomplete="off" />
+        <button class="icon-btn" id="send-btn" title="Send" aria-label="Send message">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 12h15"/><path d="M14 6l6 6-6 6"/></svg>
+        </button>
+        <button class="icon-btn" id="stop-btn" title="Stop" aria-label="Stop RAYA">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
+      </div>
+      <div class="hint-row">
+        <span><kbd>/</kbd>focus</span>
+        <span><kbd>C</kbd>chat</span>
+        <span><kbd>T</kbd>tasks</span>
+        <span><kbd>W</kbd>world</span>
+        <span><kbd>Esc</kbd>hide</span>
+      </div>
+    </div>
+
+    <!-- CONTEXTUAL SURFACES — hidden by default, opened only on real intent
+         (a ui.show_view tool call from the model) or an explicit shortcut. -->
+    <div class="surface-layer">
+      <section class="panel" id="panel-conversation" hidden>
+        <header class="panel-header">
+          <span class="panel-title">Conversation</span>
+          <button class="panel-close" data-close-panel="conversation" aria-label="Close">&times;</button>
+        </header>
+        <div class="panel-body" id="conversation-body"></div>
+      </section>
+
+      <section class="panel" id="panel-tasks" hidden>
+        <header class="panel-header">
+          <span class="panel-title">Tasks</span>
+          <button class="panel-close" data-close-panel="tasks" aria-label="Close">&times;</button>
+        </header>
+        <div class="panel-body" id="tasks-body"></div>
+      </section>
+
+      <section class="panel" id="panel-world" hidden>
+        <header class="panel-header">
+          <span class="panel-title">World</span>
+          <button class="panel-close" data-close-panel="world" aria-label="Close">&times;</button>
+        </header>
+        <div class="panel-body" id="world-body"></div>
+      </section>
+
+      <section class="panel" id="panel-browser" hidden>
+        <header class="panel-header">
+          <span class="panel-title">Browser</span>
+          <button class="panel-close" data-close-panel="browser" aria-label="Close">&times;</button>
+        </header>
+        <div class="panel-body" id="browser-body"></div>
+      </section>
+
+      <section class="panel" id="panel-computer" hidden>
+        <header class="panel-header">
+          <span class="panel-title">Computer</span>
+          <button class="panel-close" data-close-panel="computer" aria-label="Close">&times;</button>
+        </header>
+        <div class="panel-body" id="computer-body"></div>
+      </section>
+
+      <section class="panel" id="panel-attention" hidden>
+        <header class="panel-header">
+          <span class="panel-title">Attention</span>
+          <button class="panel-close" data-close-panel="attention" aria-label="Close">&times;</button>
+        </header>
+        <div class="panel-body" id="attention-body"></div>
+      </section>
+
+      <!-- Spatial (Phase 8) — a capability among many, never a default view:
+           opened only when the model itself calls scene.render for a real
+           scene, never via a keyboard shortcut or on load. -->
+      <section class="panel panel-spatial" id="panel-spatial" hidden>
+        <header class="panel-header">
+          <span class="panel-title">Scene</span>
+          <button class="panel-close" data-close-panel="spatial" aria-label="Close">&times;</button>
+        </header>
+        <div class="panel-body panel-body-canvas" id="spatial-body">
+          <canvas id="spatial-canvas"></canvas>
+        </div>
+      </section>
+    </div>
+
+    <!-- CONFIRMATION — clear, prominent, minimal, specific. Never bypassed
+         by the frontend: reflects Safety's decision only. -->
+    <div class="confirm-overlay" id="confirm-overlay" hidden>
+      <div class="confirm-card" role="alertdialog" aria-modal="true">
+        <div class="confirm-eyebrow">RAYA wants to</div>
+        <div class="confirm-title" id="confirm-title"></div>
+        <div class="confirm-reason" id="confirm-reason"></div>
+        <div class="confirm-actions">
+          <button id="confirm-no">Cancel</button>
+          <button id="confirm-yes" class="confirm-yes">Confirm</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

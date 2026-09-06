@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head><title>Test Cookie Banner</title></head>
+<body>
+  <div id="sponsored-ad" style="position:fixed;top:10px;right:10px;background:pink;padding:10px;">
+    <span>Publicité sponsorisée sans rapport</span>
+    <button id="decoy-ok" onclick="document.title='WRONG-CLICKED-DECOY'">OK</button>
+  </div>
+  <div id="cookie-consent" class="cookie-banner" role="dialog" style="position:fixed;bottom:0;left:0;right:0;background:#eee;padding:20px;">
+    <p>Nous utilisons des cookies pour ameliorer votre experience.</p>
+    <button id="accept-btn">Accepter</button>
+  </div>
+  <main>
+    <h1>Contenu principal du site</h1>
+    <p id="status">not-dismissed</p>
+  </main>
+  <script>
+    document.getElementById('accept-btn').addEventListener('click', function () {
+      document.getElementById('cookie-consent').style.display = 'none';
+      document.getElementById('status').innerText = 'dismissed';
+    });
+  </script>
+</body>
+</html>

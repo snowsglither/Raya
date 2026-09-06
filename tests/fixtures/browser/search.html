@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html>
+<head><title>Recherche</title></head>
+<body>
+  <h1>Barre de recherche</h1>
+  <input type="text" placeholder="Rechercher un produit" id="search-field" />
+  <script>
+    document.getElementById('search-field').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        window.location.href = 'products.html';
+      }
+    });
+  </script>
+</body>
+</html>
