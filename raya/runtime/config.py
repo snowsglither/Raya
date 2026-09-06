@@ -132,7 +132,7 @@ class RuntimeConfig:
     # publié) si pywin32/la plateforme ne le permet pas, jamais un crash.
     enable_perception: bool = True
     perception_poll_interval_s: float = 3.0
-    # Phase 9 : Telegram — interface opt-in (RAYA_ENABLE_TELEGRAM), désactivée
+    # Phase 9 : Telegram — interface opt-in (RAYA_TELEGRAM_ENABLED), désactivée
     # par défaut. Token JAMAIS loggé/committé — lu depuis l'environnement
     # uniquement, jamais une valeur par défaut en dur (consigne §4). Liste
     # d'IDs Telegram numériques autorisés — vide par défaut, FAIL CLOSED

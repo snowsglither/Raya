@@ -1,16 +1,22 @@
-// RAYA V2 Cockpit — client-side logic (Phase 6).
+// RAYA V2 Cockpit — client-side logic (Phase 6, layout revised Chantier 17).
 //
 // This file OWNS: visibility, layout, animation, local navigation, temporary
 // presentation state (consigne UI STATE VS CORE STATE). It never decides task
 // lifecycle, permissions, memory, world truth, execution, or model routing —
 // it only renders what the backend reports and forwards user intent to it.
 //
-// Panels open in exactly two situations: (1) the backend told us to, via a
-// real `ui.view_requested` event triggered by the model calling ui.show_view
-// (see raya/tools/catalog/ui_views.py) — never local text pattern-matching on
-// what the user typed; or (2) the user explicitly used a keyboard shortcut to
-// inspect something (Tasks/World), which always fetches the CURRENT real
-// state via the REST API rather than guessing.
+// Chantier 17 : the chat now occupies the Cockpit's main surface once a
+// conversation is actually happening (sending a message), with the orb as a
+// floating presence that shrinks to the bottom-left — replacing the earlier
+// design where Conversation was a same-sized side panel opened only by the
+// "C" key. Tasks/World/Browser/Computer/Attention/Spatial remain exactly
+// that: contextual side panels opened via their own shortcut or a real
+// `ui.view_requested` event from the model (ui.show_view,
+// raya/tools/catalog/ui_views.py) — never local text pattern-matching on
+// what the user typed. "Conversation mode" (`#app.conversation-mode`, driven
+// by `enterConversationMode()`/`closePanel("conversation")` below) is a pure
+// UI-layout concern, orthogonal to `#app[data-presence]` (glow/animation) —
+// it never touches session, memory, task, or World State.
 
 (() => {
   "use strict";
@@ -104,6 +110,16 @@
     // au-delà de la vue qui l'a ouvert — libéré dès que le panneau se ferme,
     // par quelque chemin que ce soit (scene.close, Escape, un autre panneau).
     if (name === "spatial") destroySpatialScene();
+    // Chantier 17 : SEUL point de sortie de "conversation mode" (Escape,
+    // le bouton fermer du panneau, un autre panneau qui en prend la place,
+    // ou l'inactivité via resetInactivityTimer ci-dessous) — jamais dupliqué
+    // ailleurs. Purement visuel : l'historique/la session ne sont jamais
+    // touchés (consigne A7 : "aucune donnée n'est supprimée").
+    if (name === "conversation" && conversationActive) {
+      conversationActive = false;
+      el.app.classList.remove("conversation-mode");
+      if (inactivityTimer) { clearTimeout(inactivityTimer); inactivityTimer = null; }
+    }
   }
 
   function anyPanelOpen() {
@@ -112,6 +128,34 @@
 
   function closeAllPanels() {
     Object.keys(el.panels).forEach(closePanel);
+  }
+
+  // ---------------- Conversation mode (Chantier 17) ----------------
+  //
+  // A purely visual layout state, orthogonal to presence: the orb shrinks to
+  // a small floating presence bottom-left and the conversation panel becomes
+  // the Cockpit's main full-bleed surface instead of a side card. Entered by
+  // real conversational activity (sendMessage) or the model explicitly
+  // showing the conversation view; exited by closePanel("conversation")
+  // (Escape, close button, another panel taking over) or ~60s of no further
+  // user-initiated activity. Never affects session/memory/task/World State —
+  // those keep existing entirely independently of whether this is showing.
+
+  let conversationActive = false;
+  let inactivityTimer = null;
+  const CONVERSATION_IDLE_TIMEOUT_MS = 60000;
+
+  function enterConversationMode() {
+    conversationActive = true;
+    el.app.classList.add("conversation-mode");
+    openPanel("conversation");
+    resetInactivityTimer();
+  }
+
+  function resetInactivityTimer() {
+    if (!conversationActive) return;
+    if (inactivityTimer) clearTimeout(inactivityTimer);
+    inactivityTimer = setTimeout(() => closePanel("conversation"), CONVERSATION_IDLE_TIMEOUT_MS);
   }
 
   // ---------------- Conversation ----------------
@@ -138,12 +182,14 @@
   async function sendMessage(text, { viaVoice = false } = {}) {
     if (!text.trim()) return;
     el.input.value = "";
-    // Conversation is a CONTEXTUAL panel (consigne "fix cockpit conversation
-    // panel") — a normal exchange never forces it open; it only re-renders
-    // the (possibly hidden) history so it's up to date whenever the panel
-    // IS opened, explicitly (keyboard shortcut "C") or by the model itself
-    // (ui.show_view -> openViewByName, unchanged). If it's already open —
-    // by either of those paths — it simply stays open with fresh content.
+    // Chantier 17 : un échange réel EST l'intention d'entrer en conversation
+    // mode (le chat devient la surface principale, l'orbe se réduit) —
+    // inversion délibérée de la règle Phase 6/11 précédente ("C" ouvrait
+    // seul la conversation). "C" n'a plus cette fonction (voir le listener
+    // clavier plus bas) : la seule façon d'entrer en conversation reste
+    // l'usage réel (envoyer un message), ou le modèle lui-même
+    // (ui.show_view -> openViewByName, routé vers enterConversationMode()).
+    enterConversationMode();
     const view = await api("/message", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -151,6 +197,7 @@
     });
     renderConversation(view);
     refreshPresence();
+    resetInactivityTimer(); // l'échange est terminé -- 60s pleines à partir de maintenant
     // Phase 11 (addendum "reconnecter la réponse vocale du Cockpit") : ne
     // parle QUE quand ce tour a été déclenché par le micro — un message
     // tapé au clavier reste silencieux (symétrique à l'entrée : le mic
@@ -392,7 +439,7 @@
   }
 
   function openViewByName(view) {
-    if (view === "conversation") { openPanel("conversation"); refreshConversation(); }
+    if (view === "conversation") { enterConversationMode(); refreshConversation(); }
     else if (view === "tasks") { openPanel("tasks"); refreshTasks(); }
     else if (view === "world") { openPanel("world"); refreshWorld(); }
     else if (view === "browser") { openPanel("browser"); refreshBrowser(); }
@@ -531,16 +578,15 @@
   });
 
   // Keyboard shortcuts remain available (voice is primary, not mandatory).
+  // Chantier 17 : "C" n'ouvre plus la conversation (elle s'ouvre désormais
+  // d'elle-même dès qu'un échange réel a lieu, voir sendMessage) — inspecté
+  // avant suppression (app.js Phase 6/11) : ouvrir/rafraîchir Conversation
+  // était son SEUL comportement, rien d'autre n'en dépend.
   document.addEventListener("keydown", (e) => {
     if (e.target === el.input) return;
     if (e.key === "Escape") { closeAllPanels(); return; }
     if (e.key.toLowerCase() === "t") { openPanel("tasks"); refreshTasks(); }
     if (e.key.toLowerCase() === "w") { openPanel("world"); refreshWorld(); }
-    // Ouverture EXPLICITE de Conversation (consigne "fix cockpit conversation
-    // panel") — depuis que sendMessage() ne l'ouvre plus automatiquement,
-    // c'est le seul mécanisme utilisateur direct (le modèle garde le sien,
-    // ui.show_view -> openViewByName, inchangé) pour la consulter à la demande.
-    if (e.key.toLowerCase() === "c") { openPanel("conversation"); refreshConversation(); }
     if (e.key === "/") { el.input.focus(); e.preventDefault(); }
   });
 

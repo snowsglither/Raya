@@ -59,7 +59,15 @@ html, body {
   text-transform: uppercase;
 }
 
-.orb-wrap { position: relative; width: 148px; height: 148px; display: flex; align-items: center; justify-content: center; }
+.orb-wrap {
+  position: relative;
+  width: 148px;
+  height: 148px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: width 380ms ease, height 380ms ease;
+}
 
 .orb {
   width: 88px;
@@ -68,7 +76,7 @@ html, body {
   background: radial-gradient(circle at 34% 30%, rgba(255,255,255,0.18), rgba(110,231,196,0.08) 55%, rgba(110,231,196,0.02) 75%);
   border: 1px solid var(--accent-dim);
   box-shadow: 0 0 40px rgba(110, 231, 196, 0.12);
-  transition: box-shadow 400ms ease, border-color 400ms ease, transform 400ms ease;
+  transition: box-shadow 400ms ease, border-color 400ms ease, transform 400ms ease, width 380ms ease, height 380ms ease;
 }
 
 .orb-ring {
@@ -346,6 +354,62 @@ html, body {
 }
 .confirm-actions .confirm-yes { background: rgba(226,176,99,0.18); border-color: rgba(226,176,99,0.4); color: #ffe0ad; }
 .confirm-actions button:hover { filter: brightness(1.1); }
+
+/* ---------------- Chantier 17 : conversation mode ---------------- */
+/* Orthogonal to #app[data-presence] above (glow/animation stays driven by
+   presence regardless of this) — this dimension controls LAYOUT only: the
+   orb becomes a small floating presence bottom-left, and the conversation
+   panel becomes the Cockpit's main full-bleed surface instead of a side
+   card, matching every other panel's own sizing/position. */
+
+#app.conversation-mode .orb-wrap {
+  position: fixed;
+  left: 28px;
+  bottom: 28px;
+  width: 56px;
+  height: 56px;
+  z-index: 5;
+}
+#app.conversation-mode .orb { width: 34px; height: 34px; }
+
+#app.conversation-mode .brand,
+#app.conversation-mode .status-line {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+
+#app.conversation-mode .stage {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 28px;
+  top: auto;
+  z-index: 10; /* au-dessus du panneau conversation plein écran ci-dessous */
+}
+/* L'input reste pleinement utilisable pendant la conversation — jamais
+   assombri comme un panneau contextuel secondaire (T/World gardent ce
+   comportement inchangé, voir .stage.dimmed ci-dessus). */
+#app.conversation-mode .stage.dimmed { opacity: 1; transform: none; }
+
+#app.conversation-mode #panel-conversation {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+  z-index: 1; /* sous .stage (input) et .orb-wrap, au-dessus du reste */
+}
+#app.conversation-mode #panel-conversation .panel-header,
+#app.conversation-mode #panel-conversation .panel-body {
+  max-width: 720px;
+  margin: 0 auto;
+  width: 100%;
+}
+#app.conversation-mode #panel-conversation .panel-body {
+  padding-bottom: 160px; /* laisse la place à la rangée d'input fixe en bas */
+}
 
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
