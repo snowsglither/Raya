@@ -160,6 +160,12 @@ _RISK_BY_TAG: dict[str, PermissionLevel] = {
     "phone.call": PermissionLevel.SENSITIVE,
     "phone.sms": PermissionLevel.SENSITIVE,
     "phone.answer": PermissionLevel.SENSITIVE,
+    # Chantier 20 (External Interaction Continuity) : écriture en World State
+    # uniquement (domain="interaction"), jamais un effet sur l'environnement
+    # réel. Même raisonnement que "preferences.write"/"spatial.*"/"notes" —
+    # local, réversible (TTL 24h), pas de tiers directement contacté.
+    "interaction.track": PermissionLevel.SAFE,
+    "interaction.reply": PermissionLevel.SAFE,
     # Terminer/refuser un appel déjà en cours reste fondamentalement un
     # "arrêt" scopé (même raisonnement que tasks.control ci-dessus) — jamais
     # une nouvelle conséquence créée, juste l'arrêt d'une déjà en cours.
@@ -176,6 +182,18 @@ _RISK_BY_TAG: dict[str, PermissionLevel] = {
     # système. La découverte (capability.discover) reste séparément SAFE
     # (tag "pc.read", lecture pure — voir tools/catalog/pc.py).
     "pc.shell": PermissionLevel.SENSITIVE,
+    # Chantier 1 (Software Environment Awareness) : lecture seule — découverte
+    # d'applications installées, inspection de chemins, recherche de paquets.
+    # Même profil de risque que pc.read/browser.read : jamais une mutation
+    # de l'environnement réel, jamais une exécution.
+    "pc.software": PermissionLevel.SAFE,
+    # Obsidian vault read-only tools — same risk profile as browser.read/documents.read:
+    # reads local .md files within a sandboxed vault directory, no mutation possible.
+    "obsidian.read": PermissionLevel.SAFE,
+    # Vision Foundation : capture + analyse visuelle locale (screenshot + modèle Vision).
+    # Même profil de risque que pc.read/browser.read — lecture pure de l'état
+    # visuel, jamais une mutation de l'environnement réel.
+    "vision": PermissionLevel.SAFE,
 }
 
 

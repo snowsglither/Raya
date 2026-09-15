@@ -13,7 +13,13 @@ jamais une capability devinée."""
 
 from __future__ import annotations
 
+import os
 import shutil
+
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 _KNOWN_CAPABILITIES: dict[str, str] = {
     "nmap": "network.scan",
@@ -44,3 +50,34 @@ def find(name: str) -> dict:
         "path": path,
         "capability": _KNOWN_CAPABILITIES.get(query.lower()) if path is not None else None,
     }
+
+
+def find_extended(name: str) -> dict:
+    """Extended discovery: PATH first, then App Paths registry.
+
+    Returns same structure as find() but checks more sources."""
+    result = find(name)
+    if result["available"]:
+        return result
+    # Fallback: App Paths registry
+    if winreg is None:
+        return result
+    key_name = name if name.lower().endswith(".exe") else name + ".exe"
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            subkey = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{key_name}"
+            with winreg.OpenKey(hive, subkey) as k:
+                path = winreg.QueryValue(k, None)
+                if path:
+                    path = path.strip('"').strip()
+                    if os.path.isfile(path):
+                        return {
+                            "name": name,
+                            "available": True,
+                            "path": path,
+                            "capability": _KNOWN_CAPABILITIES.get(name.lower()),
+                            "source": "app_paths_registry",
+                        }
+        except (FileNotFoundError, OSError):
+            continue
+    return result

@@ -6,6 +6,7 @@ tout le monde peut en dépendre (RAYA_V2_REPOSITORY_STRUCTURE.md §2).
 
 from ._base import from_dict, from_json, new_id, parse_iso, to_dict, to_json, utc_now_iso
 from .attention import AttentionDecision, AttentionFactors, AttentionOutcome
+from .interaction import ACTIVE_INTERACTION_STATES, ExternalInteraction, ExternalInteractionState
 from .clock import DEFAULT_TIMEZONE, LocalTime, local_time_to_dict, now_local, resolve_not_before
 from .context import Context, ContextSection, Freshness, SectionKind
 from .device import Capability, Command, CommandStatus, Device, DeviceStatus, DeviceType, Health, Result
@@ -36,6 +37,7 @@ from .model import (
     RequestedToolCall,
 )
 from .perception import PerceptionObservation
+from .visual import BoundingBox, ViewportInfo, VisualArtifact, VisualObservation, VisualTarget
 from .permission import GrantedBy, Permission, PermissionDecision
 from .spatial import (
     Geometry,
@@ -63,11 +65,13 @@ from .task import (
     plan_is_complete,
     plan_is_stuck,
 )
+from .software import DiscoveredCapability, InstalledApp, LaunchMethod, SoftwareEnvironmentSnapshot
 from .tool import ObservationSpec, PermissionLevel, Tool, ToolCall, ToolCallRequester, ToolResult, ToolResultStatus
 from .voice import InterruptionReason, VoiceEvent, VoiceEventPayload
 from .world_state import Confidence, FactStatus, WorldStateFact
 
 __all__ = [
+    "ACTIVE_INTERACTION_STATES",
     "AttentionDecision",
     "AttentionFactors",
     "AttentionOutcome",
@@ -84,10 +88,13 @@ __all__ = [
     "Device",
     "DeviceStatus",
     "DeviceType",
+    "DiscoveredCapability",
     "ErrorInfo",
     "Event",
     "ExecutionRecord",
     "ExecutionState",
+    "ExternalInteraction",
+    "ExternalInteractionState",
     "FactStatus",
     "FinishReason",
     "Freshness",
@@ -99,9 +106,11 @@ __all__ = [
     "HarnessStatus",
     "Health",
     "InterfaceInput",
+    "InstalledApp",
     "InterfacePresentation",
     "InterfaceRequest",
     "InterfaceResponse",
+    "LaunchMethod",
     "LocalTime",
     "Material",
     "Message",
@@ -127,6 +136,7 @@ __all__ = [
     "Result",
     "Scene",
     "SectionKind",
+    "SoftwareEnvironmentSnapshot",
     "SpatialError",
     "SpatialObject",
     "StepState",
@@ -144,7 +154,12 @@ __all__ = [
     "Transform",
     "Vec3",
     "VerificationState",
+    "ViewportInfo",
+    "VisualArtifact",
+    "VisualObservation",
+    "VisualTarget",
     "WorldStateFact",
+    "BoundingBox",
     "can_transition",
     "from_dict",
     "from_json",

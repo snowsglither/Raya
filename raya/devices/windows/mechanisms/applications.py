@@ -13,13 +13,31 @@ from __future__ import annotations
 
 import os
 import subprocess
+import winreg
 
 from . import wait as _wait
 from . import window_mgmt as _win
 
 
+def _resolve_app_path(name: str) -> str | None:
+    """Résout un nom court (ex: "steam") vers le chemin complet via le registre
+    App Paths — même résolution que ShellExecute, mais explicite et fiable pour
+    les noms sans extension .exe."""
+    key_name = name if name.lower().endswith(".exe") else name + ".exe"
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            subkey = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{key_name}"
+            with winreg.OpenKey(hive, subkey) as k:
+                path = winreg.QueryValue(k, None)
+                if path and os.path.isfile(path.strip('"')):
+                    return path.strip('"')
+        except (FileNotFoundError, OSError):
+            continue
+    return None
+
+
 def launch(target: str, wait_timeout_s: float = 8.0) -> dict:
-    """Lance `target` (nom résolu par Windows App Paths, ou chemin) et attend
+    """Lance `target` (nom résolu par registre App Paths, ou chemin) et attend
     qu'une VRAIE fenêtre apparaisse — jamais "le process existe" = succès."""
     already, matches = _win.is_open(target)
     if already:
@@ -28,14 +46,33 @@ def launch(target: str, wait_timeout_s: float = 8.0) -> dict:
     launched = False
     error: str | None = None
     try:
-        os.startfile(target)  # résout via App Paths registry pour les noms courts (notepad, calc, mspaint...)
+        os.startfile(target)  # résout via ShellExecute (App Paths registry, associations fichier…)
         launched = True
     except Exception as exc:
         error = str(exc)
+        # Résolution explicite via App Paths avant le fallback shell — évite le
+        # faux positif de subprocess.Popen(shell=True) qui lance cmd.exe sans
+        # lever d'exception même quand la commande n'est pas trouvée.
+        resolved = _resolve_app_path(target)
+        try_target = resolved if resolved else target
         try:
-            subprocess.Popen(target, shell=True)
-            launched = True
-            error = None
+            if resolved:
+                os.startfile(resolved)
+                launched = True
+                error = None
+            else:
+                # Fallback shell : vérifie le code de retour pour détecter
+                # "'steam' n'est pas reconnu" silencieux de cmd.exe.
+                proc = subprocess.Popen(
+                    f'start "" "{target}"', shell=True,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                proc.wait(timeout=3)
+                if proc.returncode == 0:
+                    launched = True
+                    error = None
+                else:
+                    error = f"commande non reconnue par le shell (exit {proc.returncode}): {target!r}"
         except Exception as exc2:
             error = str(exc2)
 
