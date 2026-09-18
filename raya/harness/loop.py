@@ -374,15 +374,84 @@ class Harness:
         """Résumé STRUCTURÉ et générique (jamais une phrase par outil codée
         en dur, consigne §22) — construit uniquement à partir du ToolResult
         réel, jamais d'une affirmation du modèle (consigne §9)."""
+        output = tool_result.output
+        if tool_name == "browser.read_page":
+            output = Harness._compact_read_page_output(output)
         payload = {
             "tool": tool_name,
             "status": tool_result.status.value,
             "verification": outcome.value,
-            "output": tool_result.output,
+            "output": output,
             "evidence": tool_result.evidence,
             "error": to_dict(tool_result.error) if tool_result.error else None,
         }
         return json.dumps(payload, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _compact_old_dom_messages(messages: "list[Message]") -> None:
+        """Quand un nouveau résultat browser.read_page arrive, compacte les
+        précédents en résumés {url, title, buttons_count, links_count}.
+        Préserve le plus récent intégralement. In-place, jamais de suppression."""
+        found_recent = False
+        for msg in reversed(messages):
+            if msg.role != "tool" or not msg.content:
+                continue
+            part = msg.content[0]
+            if not isinstance(part, ContentPart) or part.type != "text":
+                continue
+            try:
+                data = json.loads(part.value)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if data.get("tool") != "browser.read_page":
+                continue
+            if not found_recent:
+                found_recent = True
+                continue
+            output = data.get("output")
+            if not isinstance(output, dict) or output.get("_compacted"):
+                continue
+            data["output"] = {
+                "url": output.get("url"),
+                "title": output.get("title"),
+                "buttons_count": len(output.get("buttons") or []),
+                "links_count": len(output.get("links") or []),
+                "_compacted": True,
+            }
+            msg.content[0] = ContentPart(type="text", value=json.dumps(data, ensure_ascii=False, default=str))
+
+    @staticmethod
+    def _compact_read_page_output(output) -> "dict | str | None":
+        """Borne structurellement les sorties browser.read_page (20 boutons, 25 liens).
+        Préserve url/title/cookie_banner/inputs intégralement. Repli sûr si JSON invalide."""
+        _BUTTONS_CAP = 20
+        _LINKS_CAP = 25
+        if isinstance(output, dict):
+            data = output
+        elif isinstance(output, str):
+            try:
+                data = json.loads(output)
+            except (json.JSONDecodeError, ValueError):
+                return output
+        else:
+            return output
+        if not isinstance(data, dict):
+            return output
+        buttons = data.get("buttons") or []
+        links = data.get("links") or []
+        result: dict = {
+            "url": data.get("url"),
+            "title": data.get("title"),
+            "cookie_banner": data.get("cookie_banner"),
+            "inputs": data.get("inputs") or [],
+            "buttons": buttons[:_BUTTONS_CAP],
+            "links": links[:_LINKS_CAP],
+        }
+        if len(buttons) > _BUTTONS_CAP:
+            result["buttons_capped"] = len(buttons) - _BUTTONS_CAP
+        if len(links) > _LINKS_CAP:
+            result["links_capped"] = len(links) - _LINKS_CAP
+        return result
 
     def _explain_blocked_turn(self, objective_text: str, trace: list[dict], reason_hint: str,
                                correlation_id: str) -> str:
@@ -427,6 +496,81 @@ class Harness:
         # n'est disponible — même discipline que les autres replis Harness.
         attempted = ", ".join(sorted({t.get("tool_name", "?") for t in trace})) or "aucune action"
         return f"{reason_hint} J'ai tenté : {attempted}. Je préfère le dire plutôt que prétendre avoir terminé."
+
+    @staticmethod
+    def _build_finalization_trace(trace: list[dict], max_entries: int = 8) -> list[dict]:
+        """Trace bornée pour _finalize_turn : 4 dernières actions + actions
+        plus anciennes portant de l'evidence. Évite de passer la trace brute entière."""
+        if not trace:
+            return []
+        if len(trace) <= max_entries:
+            return list(trace)
+        recent_count = min(4, max_entries, len(trace))
+        recent = trace[-recent_count:]
+        recent_start = len(trace) - recent_count
+        slots_left = max_entries - recent_count
+        if slots_left > 0:
+            older_with_evidence = [t for t in trace[:recent_start] if t.get("evidence")]
+            selected_older = older_with_evidence[-slots_left:]
+        else:
+            selected_older = []
+        return selected_older + recent
+
+    def _finalize_turn(self, objective_text: str, trace: list[dict], correlation_id: str) -> str:
+        """Budget d'itérations d'outils épuisé. BUDGET EXHAUSTED ≠ TASK FAILED.
+        Distinct de _explain_blocked_turn (réservé au vrai blocage LoopDetector).
+        Passe available_tools=None pour prévenir structurellement un 13e appel d'outil."""
+        finalization_trace = self._build_finalization_trace(trace)
+        trace_summary = json.dumps([
+            {"tool": t.get("tool_name"), "status": t.get("status"),
+             "outcome": t.get("outcome"), "evidence": t.get("evidence")}
+            for t in finalization_trace
+        ], ensure_ascii=False, default=str)
+        browser_facts = self._world_state.retrieve_relevant(("browser",))
+        ws_relevant = {f.key: f.value for f in browser_facts
+                       if f.key in ("current_url", "last_clicked_target")}
+        user_content = (
+            f"User request: {objective_text}\n"
+            f"Last tool results and evidence:\n{trace_summary}"
+        )
+        if ws_relevant:
+            user_content += f"\nCurrent observed state: {json.dumps(ws_relevant, ensure_ascii=False, default=str)}"
+        messages = [
+            Message(role="system", content=[ContentPart(type="text", value=(
+                "You have used your full action budget working on the user's request. "
+                "Using ONLY the tool results and evidence shown below, report to the user "
+                "HONESTLY and in their language: what was actually accomplished. "
+                "If the evidence confirms the objective was completed, say so clearly. "
+                "If the evidence is incomplete or absent, acknowledge the uncertainty honestly. "
+                "Do NOT claim success without evidence. "
+                "Do NOT declare failure simply because the budget was exhausted. "
+                "Do NOT mention tools, JSON, traces, budgets, or any technical detail."
+            ))]),
+            Message(role="user", content=[ContentPart(type="text", value=user_content)]),
+        ]
+        response = model_route(self._model_registry, ModelRequest(
+            capability=ModelCapability.REASONING,
+            messages=messages,
+            correlation_id=correlation_id,
+            available_tools=None,
+            context_budget_tokens=self._context_budget_tokens,
+        ))
+        if response.finish_reason != FinishReason.ERROR:
+            text = "".join(p.value for p in response.content if p.type == "text").strip()
+            if text:
+                return text
+        # Repli honnête si aucun modèle disponible
+        last_evidence = next((t.get("evidence") for t in reversed(trace) if t.get("evidence")), None)
+        if last_evidence:
+            return (
+                "J'ai atteint la limite de mes actions. "
+                f"Dernière observation : {json.dumps(last_evidence, ensure_ascii=False, default=str)}"
+            )
+        attempted = ", ".join(sorted({t.get("tool_name", "?") for t in trace})) or "aucune action"
+        return (
+            f"J'ai atteint la limite de mes actions ({len(trace)} tentée(s) : {attempted}) "
+            "sans confirmation de résultat."
+        )
 
     def _run_agentic_loop(self, request: HarnessRequest, state: HarnessState, context) -> str:
         context_budget_tokens = context.budget_tokens
@@ -598,6 +742,9 @@ class Harness:
                     content=[ContentPart(type="text", value=self._summarize_tool_result(requested.tool_name, tool_result, outcome))],
                 ))
 
+                if requested.tool_name == "browser.read_page":
+                    self._compact_old_dom_messages(messages)
+
                 if recovery_action == RecoveryAction.ESCALATE:
                     escalation_text = self._explain_blocked_turn(
                         request.input.text or "", trace,
@@ -642,11 +789,8 @@ class Harness:
             # d'outils (jamais ses propres affirmations) au tour suivant.
 
         self._last_tool_trace[request.session_id] = trace
-        return self._explain_blocked_turn(
-            request.input.text or "", trace,
-            f"Je n'ai pas terminé cette demande dans les {self._max_tool_iterations} étapes prévues "
-            f"({len(trace)} action(s) réelle(s) tentée(s)).",
-            request.correlation_id,
+        return self._finalize_turn(
+            request.input.text or "", trace, request.correlation_id,
         )
 
     # ------------------------------------------------------------------

@@ -228,6 +228,26 @@ def render_system_prompt(context: Context) -> str:
                 "but nmap isn't installed and I didn't find an equivalent available network capability') "
                 "rather than pretending to run something that does not exist."
             )
+            # Chantier 20A §F2 (Referent Dominance) : seuil de dominance
+            # explicite pour la résolution de référent ambigu — jamais MRU
+            # conversationnel seul comme grounding suffisant.
+            lines.append(
+                "When the user uses a pronoun or implicit reference ('close it', 'look at it', "
+                "'what do you think?') that could refer to more than one thing, resolve it using "
+                "this priority order: (1) Observed environment state — if WS.active_window, "
+                "last_clicked_target, or last_typed_target identifies a specific target unambiguously, "
+                "act on it; (2) most recent tool results — if the last tool in this conversation "
+                "explicitly acted on a specific target, that is the dominant referent; "
+                "(3) most recent conversational exchanges — only if the user explicitly named or "
+                "established a referent in the immediately preceding turn. "
+                "A referent is clearly dominant only when one of (1)(2)(3) applies unambiguously. "
+                "The fact that something was most recently opened or mentioned in conversation "
+                "history does not make it dominant when multiple plausible referents exist — "
+                "conversation history alone is not sufficient grounding for dominance. "
+                "If none of (1)(2)(3) clearly resolves the referent and two or more targets are "
+                "plausible, ask a short clarifying question rather than guessing. "
+                "If no referent is identifiable at all, ask for clarification."
+            )
 
         elif section.kind == SectionKind.MEMORY:
             memory_section = section.content or {}

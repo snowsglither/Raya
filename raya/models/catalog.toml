@@ -1,0 +1,53 @@
+# RAYA V2 — Model catalog (Chantier 2)
+# IDs verified against Ollama Cloud GET /api/tags (2026-09-15).
+# capability_evidence values: "unknown" | "declared" | "verified"
+
+[[models]]
+model_id = "deepseek-v4.1-flash"
+display_name = "DeepSeek V4.1 Flash"
+provider = "ollama_cloud"
+context_limit = 128000
+supports_tool_calls = true
+supports_vision = false
+capabilities = ["reasoning", "planning", "fast_response"]
+capability_evidence = "declared"
+
+[[models]]
+model_id = "kimi-k2.7-code"
+display_name = "Kimi K2.7 Code"
+provider = "ollama_cloud"
+context_limit = 128000
+supports_tool_calls = true
+supports_vision = false
+capabilities = ["coding"]
+capability_evidence = "declared"
+
+[[models]]
+model_id = "gemma4:31b"
+display_name = "Gemma 4 31B"
+provider = "ollama_cloud"
+context_limit = 128000
+supports_tool_calls = false
+supports_vision = true
+capabilities = ["vision", "classification", "summarization"]
+capability_evidence = "declared"
+
+[[models]]
+model_id = "deepseek-v4-flash:0731"
+display_name = "DeepSeek V4 Flash (Jul 2031)"
+provider = "ollama_cloud"
+context_limit = 128000
+supports_tool_calls = true
+supports_vision = false
+capabilities = ["reasoning", "planning", "fast_response"]
+capability_evidence = "declared"
+
+[[models]]
+model_id = "kimi-k3"
+display_name = "Kimi K3"
+provider = "ollama_cloud"
+context_limit = 128000
+supports_tool_calls = true
+supports_vision = false
+capabilities = ["reasoning", "coding", "planning"]
+capability_evidence = "declared"

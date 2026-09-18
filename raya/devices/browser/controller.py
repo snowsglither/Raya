@@ -82,25 +82,27 @@ _STRUCT_JS = r"""
     return out;
   };
   const BTN_SEL = 'button, [role=button], input[type=submit], input[type=button]';
-  const priorityRoots = [...document.querySelectorAll(
-    '#desktop_buybox, #addToCart_feature_div, #buybox, [id*=buybox i], '
-    + '[id*=addtocart i], [id*=add-to-cart i], [class*=buybox i]'
-  )];
-  const seen = new Set();
-  const priorityButtons = [];
-  for (const root of priorityRoots) {
-    for (const b of grab(BTN_SEL, 'button', 20, root)) {
-      const key = b.text + '|' + b.tag;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      priorityButtons.push(b);
-    }
-  }
-  const buttons = priorityButtons.concat(
-    grab(BTN_SEL, 'button', 100).filter(b => !seen.has(b.text + '|' + b.tag))
-  ).slice(0, 120);
+  const buttons = grab(BTN_SEL, 'button', 120);
   const links = grab('a[href]', 'link', 60);
-  const inputs = grab('input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, [role=searchbox], [contenteditable=true]', 'input', 20);
+  const grab_inputs = (sel, cap) => {
+    const out = [];
+    for (const el of document.querySelectorAll(sel)) {
+      if (!vis(el)) continue;
+      const it = el.getAttribute('type');
+      const t = (it === 'password')
+        ? (el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim().slice(0, 90)
+        : label(el);
+      const item = { kind: 'input', text: t, tag: el.tagName.toLowerCase() };
+      if (it) item.input_type = it;
+      if (el.disabled) item.disabled = true;
+      const ar = el.getAttribute('role') || el.getAttribute('aria-role');
+      if (ar) item.aria_role = ar;
+      out.push(item);
+      if (out.length >= cap) break;
+    }
+    return out;
+  };
+  const inputs = grab_inputs('input:not([type=hidden]):not([type=submit]):not([type=button]), textarea, [role=searchbox], [contenteditable=true]', 20);
   let cookieBanner = false;
   for (const el of document.querySelectorAll('[id*=cookie i],[class*=cookie i],[id*=consent i],[class*=consent i]')) {
     if (vis(el)) { cookieBanner = true; break; }
@@ -145,7 +147,29 @@ class BrowserController:
         def _op():
             page = self._page()
             page.screenshot(path=path)
-            return {"status": "ok", "path": path}
+            width, height = None, None
+            try:
+                from PIL import Image
+                with Image.open(path) as img:
+                    width, height = img.size
+            except Exception:
+                try:
+                    vp = page.viewport_size
+                    if vp:
+                        width, height = vp.get("width"), vp.get("height")
+                except Exception:
+                    pass
+            result: dict = {"status": "ok", "path": path}
+            if width is not None:
+                result["width"] = width
+            if height is not None:
+                result["height"] = height
+            try:
+                result["url"] = page.url
+                result["title"] = page.title()
+            except Exception:
+                pass
+            return result
 
         return self._worker.run_sync(_op)
 
@@ -201,7 +225,19 @@ class BrowserController:
             if loc is None:
                 return {"status": "not_found", "target": target}
             loc.click(timeout=timeout_ms)
-            return {"status": "ok", "target": target}
+            try:
+                url = self._page().url
+            except Exception:
+                url = ""
+            return {"status": "ok", "target": target, "url": url}
+
+        return self._worker.run_sync(_op)
+
+    def click_at_position(self, x: int, y: int) -> dict:
+        def _op():
+            page = self._page()
+            page.mouse.click(x, y)
+            return {"status": "ok", "x": x, "y": y}
 
         return self._worker.run_sync(_op)
 

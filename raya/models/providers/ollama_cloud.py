@@ -20,8 +20,10 @@ code ErrorInfo, avec le provider/status/message réels conservés.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
+from pathlib import Path
 
 import requests
 
@@ -45,6 +47,18 @@ _DEFAULT_HOST = "https://ollama.com"
 _CHAT_PATH = "/api/chat"
 
 
+def _encode_image_ref(path: str) -> str | None:
+    """Base64-encode une image locale pour l'API Ollama. Retourne None si le
+    fichier est absent ou illisible (dégradation gracieuse — pas d'exception)."""
+    img_path = Path(path)
+    if not img_path.exists():
+        return None
+    try:
+        return base64.b64encode(img_path.read_bytes()).decode("ascii")
+    except Exception:
+        return None
+
+
 def _messages_to_ollama(messages: list[Message]) -> list[dict]:
     """Bug corrigé (passe 'Targeted Execution Repair', trouvé en E2E réel) :
     un tour assistant demandant un appel d'outil était sérialisé comme un
@@ -58,6 +72,14 @@ def _messages_to_ollama(messages: list[Message]) -> list[dict]:
     for m in messages:
         text = "".join(p.value for p in m.content if p.type == "text")
         entry: dict = {"role": m.role, "content": text}
+        images = [
+            enc for p in m.content
+            if p.type == "image_ref"
+            for enc in [_encode_image_ref(p.value)]
+            if enc is not None
+        ]
+        if images:
+            entry["images"] = images
         if m.tool_calls:
             entry["tool_calls"] = [
                 {"id": tc.get("id"), "function": {"name": tc.get("name"), "arguments": tc.get("arguments") or {}}}

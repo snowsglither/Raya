@@ -41,6 +41,7 @@ from raya.tools.catalog import (
     register_system_time_tool,
     register_task_control_tools,
     register_ui_view_tools,
+    register_visual_tools,
 )
 from raya.world_state import WorldStateStore
 
@@ -138,6 +139,58 @@ def _register_devices(devices: DeviceRegistry, tools: ToolRegistry, config: Runt
             log("warning", "Phone Device Agent indisponible sur cette plateforme", detail=str(exc))
 
 
+def _register_vision_tools(
+    tools: ToolRegistry, devices: DeviceRegistry, models: ModelRegistry, config: RuntimeConfig
+) -> None:
+    """Best-effort — vision indisponible (pyautogui manquant, pas de provider
+    VISION enregistré) ne bloque jamais le démarrage du runtime."""
+    try:
+        import tempfile
+        from pathlib import Path as _Path
+        from raya.contracts import Command as _Command
+        from raya.models.vision import observe_image
+
+        def _observe_fn(path, prompt, find_target, correlation_id, prefer_local, viewport, source):
+            return observe_image(models, path, prompt, find_target, correlation_id, prefer_local, viewport, source)
+
+        def _capture_screen_fn() -> dict:
+            import pyautogui
+            tmp = _Path(tempfile.mkdtemp()) / "raya_screen_cap.png"
+            img = pyautogui.screenshot()
+            img.save(str(tmp))
+            return {"path": str(tmp), "width": img.width, "height": img.height}
+
+        def _capture_browser_fn() -> dict:
+            agent = devices.get("browser_agent")
+            if agent is None:
+                raise RuntimeError("browser_agent non disponible pour vision.capture")
+            cmd = _Command(
+                device_id="browser_agent",
+                capability_name="browser.screenshot",
+                arguments={"filename": "raya_vision_capture.png"},
+                correlation_id="vision_capture",
+            )
+            result = agent.execute(cmd)
+            if result.status.value != "success":
+                err = result.error.message if result.error else "unknown"
+                raise RuntimeError(f"browser.screenshot failed: {err}")
+            return {
+                "path": result.output["path"],
+                "width": result.output.get("width", 0),
+                "height": result.output.get("height", 0),
+                "url": result.output.get("url", ""),
+                "title": result.output.get("title", ""),
+            }
+
+        register_visual_tools(
+            tools, _observe_fn, _capture_screen_fn, _capture_browser_fn,
+            prefer_local=config.enable_ollama_local,
+        )
+        log("info", "vision tools registered")
+    except Exception as exc:
+        log("warning", "Vision tools indisponibles sur cette plateforme", detail=str(exc))
+
+
 def _start_perception(config: RuntimeConfig, bus: EventBus) -> PerceptionRuntime | None:
     """Best-effort, comme `_register_devices()` : une plateforme sans pywin32
     ne doit jamais empêcher le reste de RAYA de démarrer — `ActiveWindowSensor`
@@ -207,6 +260,7 @@ def bootstrap(config: RuntimeConfig | None = None, backend: PersistenceBackend |
 
     devices = DeviceRegistry()
     _register_devices(devices, tools, config, safety)
+    _register_vision_tools(tools, devices, models, config)
 
     perception = _start_perception(config, bus)
 

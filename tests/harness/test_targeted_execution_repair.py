@@ -139,19 +139,20 @@ def test_nudge_resets_on_success(tmp_path):
         handles.shutdown()
 
 
-def test_explain_blocked_turn_used_at_budget_exhaustion(tmp_path):
+def test_finalize_turn_used_at_budget_exhaustion(tmp_path):
     """Partie 10 : le message de fin de budget est désormais construit par
-    `_explain_blocked_turn` (un appel modèle borné supplémentaire) — jamais
-    le JSON brut, jamais une invention au-delà de la vraie trace."""
+    `_finalize_turn` (un appel modèle borné supplémentaire) — jamais
+    le JSON brut, jamais une invention au-delà de la vraie trace.
+    BUDGET EXHAUSTED ≠ TASK FAILED."""
     infinite_tool_calls = [_tool_call_response("test.always_fail_varying", {"attempt": i}) for i in range(10)]
     handles, fake = build_test_harness(tmp_path, infinite_tool_calls, max_tool_iterations=3)
     try:
         _register_always_fail_tool(handles)
         state = handles.harness.handle_request(_req("boucle"))
         response = handles.harness.response_text("s1")
-        assert "prétendre avoir terminé" in response
+        assert "atteint" in response  # fallback _finalize_turn: "J'ai atteint la limite de mes actions"
         assert '"status"' not in response  # jamais de ToolResult JSON brut
-        assert len(fake.calls) == 4  # 3 itérations + 1 appel d'explication
+        assert len(fake.calls) == 4  # 3 itérations + 1 appel de finalisation
     finally:
         handles.shutdown()
 

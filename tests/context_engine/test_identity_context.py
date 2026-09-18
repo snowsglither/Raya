@@ -97,10 +97,10 @@ def test_identity_baseline_never_duplicated_with_relevance_search():
     assert len([s for s in mem_sections if "Bruxelles" in s.content["content"]]) == 1
 
 
-def test_non_identity_personal_memory_not_baseline_included():
-    """Un fait PERSONAL hors provenance 'profile_migration:identity' (ex:
-    loisir) ne doit PAS apparaître si la question ne le mentionne pas —
-    sinon on retombe dans le 'énorme profil statique' interdit."""
+def test_non_identity_personal_memory_visible_without_keyword_match():
+    """F1 (Chantier 20A) : un fait PERSONAL CONFIRMED hors identity baseline
+    doit désormais être visible même sans chevauchement lexical — c'est le
+    comportement explicitement corrigé par _personal_context_sections()."""
     ws, mem = _stores()
     mem.write(MemoryEntry(
         type=MemoryType.FACT, layer=MemoryLayer.PERSONAL, channel_scope=ChannelScope.SHARED,
@@ -109,7 +109,7 @@ def test_non_identity_personal_memory_not_baseline_included():
     ))
     ctx = assemble(session_id="s1", channel_scope=ChannelScope.CHAT, world_state=ws, memory=mem, query_text="Qui suis-je ?")
     mem_sections = [s for s in ctx.sections if s.kind == SectionKind.MEMORY]
-    assert not any("GUITARE" in s.content["content"] for s in mem_sections)
+    assert any("GUITARE" in s.content["content"] for s in mem_sections)
 
 
 def test_hobby_fact_retrieved_when_actually_relevant():
@@ -139,7 +139,10 @@ def test_family_fact_retrieved_by_name_match():
     assert any("Christopher" in s.content["content"] for s in mem_sections)
 
 
-def test_unrelated_family_member_not_pulled_in_for_unrelated_question():
+def test_personal_confirmed_entry_visible_even_for_unrelated_question():
+    """F1 (Chantier 20A) : une entrée PERSONAL CONFIRMED (relation, etc.)
+    est désormais visible même pour une question sans rapport — c'est le
+    comportement souhaité de _personal_context_sections()."""
     ws, mem = _stores()
     mem.write(MemoryEntry(
         type=MemoryType.FACT, layer=MemoryLayer.PERSONAL, channel_scope=ChannelScope.SHARED,
@@ -148,7 +151,7 @@ def test_unrelated_family_member_not_pulled_in_for_unrelated_question():
     ))
     ctx = assemble(session_id="s1", channel_scope=ChannelScope.CHAT, world_state=ws, memory=mem, query_text="Quel temps fait-il ?")
     mem_sections = [s for s in ctx.sections if s.kind == SectionKind.MEMORY]
-    assert not any("Denis" in s.content["content"] for s in mem_sections)
+    assert any("Denis" in s.content["content"] for s in mem_sections)
 
 
 # --- Provenance / confidence / lifecycle carried through ---
@@ -211,8 +214,10 @@ def test_identity_fact_survives_heavy_conversation_accumulation():
 
 
 def test_full_profile_ingestion_does_not_dump_everything_for_unrelated_question():
-    """38 puces migrées (comme le vrai profil), question neutre -> seule la
-    petite section IDENTITÉ (baseline) doit apparaître, jamais les 38."""
+    """27 puces migrées (27 non-identity), question neutre -> 7 identity +
+    au maximum 8 personal via _personal_context_sections() = max 15 sections.
+    Jamais les 27 non-identity puces en entier — limit=8 protège contre
+    l'énorme profil statique (F1, Chantier 20A)."""
     ws, mem = _stores()
     sections_data = {
         "identity": [f"fait identite {i}" for i in range(7)],
@@ -229,4 +234,5 @@ def test_full_profile_ingestion_does_not_dump_everything_for_unrelated_question(
             ))
     ctx = assemble(session_id="s1", channel_scope=ChannelScope.CHAT, world_state=ws, memory=mem, query_text="Quelle est la météo ?")
     mem_sections = [s for s in ctx.sections if s.kind == SectionKind.MEMORY]
-    assert len(mem_sections) <= 7  # jamais les 27 autres puces hors-sujet
+    # 7 identity + max 8 personal (limit) = max 15 — jamais les 27 puces non-identity
+    assert len(mem_sections) <= 15

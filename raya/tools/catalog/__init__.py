@@ -15,11 +15,12 @@ from .spatial import register_spatial_tools
 from .system_time import register_system_time_tool
 from .tasks import TaskControlOps, register_task_control_tools
 from .ui_views import register_ui_view_tools
+from .visual import register_visual_tools
 
 __all__ = [
     "register_demo_tools", "register_pc_tools", "register_browser_tools",
     "register_task_control_tools", "TaskControlOps", "register_ui_view_tools",
     "register_spatial_tools", "register_notify_tools", "NotifyOps",
     "register_system_time_tool", "register_preference_tools", "PreferenceOps",
-    "register_phone_tools",
+    "register_phone_tools", "register_visual_tools",
 ]

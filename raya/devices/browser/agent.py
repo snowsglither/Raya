@@ -9,6 +9,7 @@ mutante, voir `raya/safety/risk.py`)."""
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from raya.contracts import Capability, Command, CommandStatus, DeviceStatus, ErrorInfo, Health, Result
@@ -26,8 +27,10 @@ _CAPABILITIES = [
     Capability(name="browser.screenshot", input_schema={"type": "object", "properties": {"filename": {"type": "string"}}}, mechanism_hint="cdp_screenshot"),
     Capability(name="browser.list_tabs", input_schema={"type": "object", "properties": {}}, mechanism_hint="cdp_context_pages"),
     Capability(name="browser.click", input_schema={"type": "object", "properties": {"target": {"type": "string"}}, "required": ["target"]}, mechanism_hint="playwright_locator_click"),
+    Capability(name="browser.click_at_position", input_schema={"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}}, "required": ["x", "y"]}, mechanism_hint="playwright_mouse_click"),
     Capability(name="browser.type", input_schema={"type": "object", "properties": {"target": {"type": "string"}, "text": {"type": "string"}, "submit": {"type": "boolean"}}, "required": ["target", "text"]}, mechanism_hint="playwright_locator_fill"),
     Capability(name="browser.dismiss_overlay", input_schema={"type": "object", "properties": {"max_rounds": {"type": "integer"}}}, mechanism_hint="scoped_overlay_click"),
+    Capability(name="browser.check_confirmation", input_schema={"type": "object", "properties": {}}, mechanism_hint="dom_url_text_check"),
 ]
 
 
@@ -88,7 +91,10 @@ def _navigate(agent: BrowserDeviceAgent, command: Command) -> Result:
 
 def _read_page(agent: BrowserDeviceAgent, command: Command) -> Result:
     r = agent._controller.read_page()
-    evidence = {"url": r["url"], "cookie_banner": r["cookie_banner"]}
+    url = r.get("url", "")
+    title = r.get("title", "")
+    fp = hashlib.md5(f"{url}|{title}".encode()).hexdigest()[:12]
+    evidence = {"url": url, "title": title, "cookie_banner": r.get("cookie_banner"), "page_fingerprint": fp}
     return _ok(command, r, evidence, "cdp_dom_eval")
 
 
@@ -97,7 +103,16 @@ def _screenshot(agent: BrowserDeviceAgent, command: Command) -> Result:
     agent._screenshot_dir.mkdir(parents=True, exist_ok=True)
     path = str(agent._screenshot_dir / filename)
     r = agent._controller.screenshot(path)
-    return _ok(command, {"path": r["path"]}, {}, "cdp_screenshot")
+    output: dict = {"path": r["path"]}
+    if "width" in r:
+        output["width"] = r["width"]
+    if "height" in r:
+        output["height"] = r["height"]
+    if "url" in r:
+        output["url"] = r["url"]
+    if "title" in r:
+        output["title"] = r["title"]
+    return _ok(command, output, {}, "cdp_screenshot")
 
 
 def _list_tabs(agent: BrowserDeviceAgent, command: Command) -> Result:
@@ -110,7 +125,15 @@ def _click(agent: BrowserDeviceAgent, command: Command) -> Result:
     r = agent._controller.click(target)
     if r["status"] == "not_found":
         return _fail(command, "ELEMENT_NOT_FOUND", f"aucun élément cliquable pour {target!r}", "playwright_locator_click", retryable=False)
-    return _ok(command, {"clicked": target}, {}, "playwright_locator_click")
+    evidence = {"clicked_target": target, "url": r.get("url", "")}
+    return _ok(command, {"clicked": target}, evidence, "playwright_locator_click")
+
+
+def _click_at_position(agent: BrowserDeviceAgent, command: Command) -> Result:
+    x = int(command.arguments["x"])
+    y = int(command.arguments["y"])
+    agent._controller.click_at_position(x, y)
+    return _ok(command, {"clicked_at": {"x": x, "y": y}}, {"clicked_at": f"{x},{y}"}, "playwright_mouse_click")
 
 
 def _type(agent: BrowserDeviceAgent, command: Command) -> Result:
@@ -129,12 +152,21 @@ def _dismiss_overlay(agent: BrowserDeviceAgent, command: Command) -> Result:
     return _ok(command, r, {"dismissed": r["dismissed"]}, "scoped_overlay_click")
 
 
+def _check_confirmation(agent: BrowserDeviceAgent, command: Command) -> Result:
+    result = agent._controller.check_confirmation()
+    if result is True:
+        return _ok(command, {"confirmed": True}, {"confirmation_detected": True}, "check_confirmation")
+    return _ok(command, {"confirmed": False, "inconclusive": True}, {}, "check_confirmation")
+
+
 _DISPATCH = {
     "browser.navigate": _navigate,
     "browser.read_page": _read_page,
     "browser.screenshot": _screenshot,
     "browser.list_tabs": _list_tabs,
     "browser.click": _click,
+    "browser.click_at_position": _click_at_position,
     "browser.type": _type,
     "browser.dismiss_overlay": _dismiss_overlay,
+    "browser.check_confirmation": _check_confirmation,
 }

@@ -14,6 +14,7 @@ from raya.contracts import (
     FactStatus,
     Freshness,
     MemoryLayer,
+    MemoryLifecycle,
     SectionKind,
     Task,
 )
@@ -183,6 +184,52 @@ def _identity_baseline_sections(memory: MemoryStore, channel_scope: ChannelScope
     ]
 
 
+def _personal_context_sections(
+    memory: MemoryStore,
+    channel_scope: ChannelScope,
+    exclude_ids: frozenset[str] = frozenset(),
+    limit: int = 8,
+) -> list[ContextSection]:
+    """Contexte personnel CONFIRMED/ACTIVE — JAMAIS keyword-filtré.
+
+    F1 root cause (20A) : les préférences / hobbies / style de communication
+    stockés en MemoryLayer.PERSONAL (ex: "ÉCHECS : joue le dimanche",
+    "Tutoiement, ton direct") sont invisibles pour des requêtes sans
+    chevauchement lexical direct ("mes activités ?", "comment tu me parles ?")
+    parce que _memory_sections() passe par memory.search(query=query_text)
+    dont le filtre _significant_words(≥4 chars) exclut ces entrées en amont
+    du scoring. Même discipline que _identity_baseline_sections() : query=""
+    pour récupérer TOUTES les entrées, puis filtre par layer + lifecycle.
+
+    Invariants :
+    - CONFIRMED et ACTIVE seulement — CANDIDATE/AGING jamais injectés
+    - exclut l'identity baseline (déjà dans _identity_baseline_sections)
+    - limit=8 : protection contre un profil très grand
+    - exclude_ids : évite les doublons avec les sections déjà assemblées"""
+    hits = memory.search(query="", channel_scope=channel_scope, limit=500)
+    personal = [
+        e for e in hits
+        if e.layer == MemoryLayer.PERSONAL
+        and e.provenance != _IDENTITY_BASELINE_PROVENANCE
+        and e.id not in exclude_ids
+        and e.lifecycle in (MemoryLifecycle.CONFIRMED, MemoryLifecycle.ACTIVE)
+    ]
+    personal.sort(
+        key=lambda e: _LIFECYCLE_WEIGHT.get(e.lifecycle.value, 0.5)
+                      * _CONFIDENCE_WEIGHT.get(e.confidence, 0.5),
+        reverse=True,
+    )
+    return [
+        ContextSection(
+            kind=SectionKind.MEMORY,
+            content={"id": entry.id, "type": entry.type.value, "content": entry.content},
+            provenance=entry.provenance,
+            rank_score=_LIFECYCLE_WEIGHT.get(entry.lifecycle.value, 0.5),
+        )
+        for entry in personal[:limit]
+    ]
+
+
 _ASSISTANT_PROVENANCE_SUFFIX = ":assistant"
 
 
@@ -264,7 +311,12 @@ def assemble(
     identity_sections = _identity_baseline_sections(memory, channel_scope)
     identity_ids = frozenset(s.content["id"] for s in identity_sections)
     candidates.extend(identity_sections)
-    candidates.extend(_memory_sections(memory, channel_scope, query_text, exclude_ids=identity_ids))
+
+    personal_sections = _personal_context_sections(memory, channel_scope, exclude_ids=identity_ids)
+    personal_ids = frozenset(s.content["id"] for s in personal_sections)
+    candidates.extend(personal_sections)
+
+    candidates.extend(_memory_sections(memory, channel_scope, query_text, exclude_ids=identity_ids | personal_ids))
 
     tool_section = _tool_schema_section(tools_registry, capability_tags)
     if tool_section is not None:
