@@ -279,11 +279,37 @@ def render_system_prompt(context: Context) -> str:
             # Chantier 16 : visible même hors d'un step de tâche de fond en
             # cours (contrairement à TASK_STATE ci-dessus) — permet de
             # résoudre "arrête ça" pendant une conversation normale.
+            # RC1 : rendu enrichi pour les objectifs conversationnels.
             c = section.content or {}
-            lines.append(
-                f"Other active task ({c.get('task_id')}): {c.get('objective')!r}, state={c.get('state')}"
-                + (f", scheduled for {c.get('not_before')}" if c.get("not_before") else "")
-            )
+            if c.get("is_conversational_objective"):
+                if c.get("recently_completed"):
+                    turns_ago = c.get("turns_ago", 0)
+                    result = c.get("result_summary") or "(completed)"
+                    lines.append(
+                        f"Recently completed objective ({turns_ago} turn(s) ago): "
+                        f"{c.get('objective')!r} — result: {result}"
+                    )
+                else:
+                    lines.append(f"Current conversational objective: {c.get('objective')!r}")
+                    obj_state = c.get("objective_state") or {}
+                    rel_info = obj_state.get("relevant_information") or []
+                    if rel_info:
+                        summary = "; ".join(
+                            e.get("content", "") for e in rel_info[-3:] if e.get("content")
+                        )
+                        if summary:
+                            lines.append(f"Working state: {summary}")
+                    next_ckpt = obj_state.get("next_checkpoint")
+                    if next_ckpt:
+                        lines.append(
+                            f"Next expected: {next_ckpt.get('domain')}.{next_ckpt.get('key')} "
+                            f"= {next_ckpt.get('expected_value')!r}"
+                        )
+            else:
+                lines.append(
+                    f"Other active task ({c.get('task_id')}): {c.get('objective')!r}, state={c.get('state')}"
+                    + (f", scheduled for {c.get('not_before')}" if c.get("not_before") else "")
+                )
 
         elif section.kind == SectionKind.CONVERSATION_HISTORY:
             # RAYA_V2_PHASE11 fix (context continuity) : distingue désormais

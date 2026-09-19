@@ -25,16 +25,24 @@ import uuid
 
 from raya.attention import AttentionEngine, FocusTracker
 from raya.cognition import (
+    ActiveTaskContext,
+    CapabilitySelectionRequest,
     Intent,
     LoopDetector,
+    ObjectiveRelationProposal,
+    ObjectiveRelationRequest,
     RecoveryAction,
+    RecentlyCompletedContext,
+    TraceSummary,
     VerificationOutcome,
     build_plan,
+    classify_objective_relation,
     combine_outcomes,
     derive_intent,
     detect_no_progress,
     detect_repeating_cycle,
     replan_step,
+    select_capabilities,
     verify_observation_against_intent,
     verify_tool_result,
 )
@@ -117,6 +125,21 @@ _ATTENTION_LOG_MAXLEN = 50
 # (Chantier 14, tools/catalog/tasks.py) — jamais l'historique terminal
 # complet dans le contexte d'une conversation normale.
 _TERMINAL_TASK_STATES_FOR_CONTEXT = frozenset({TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED})
+
+# RC1 — Conversational Objective Working State constants
+_CONV_OBJ_KIND = "conversational_objective"
+_TASK_EXPIRATION_UNTOUCHED_TURNS = 10
+_RECENTLY_COMPLETED_OBJECTIVE_WINDOW_TURNS = 3
+_RELEVANT_INFO_CAP = 20
+
+# RC2 — Pre-model capability selection constants
+# Always included regardless of selector output — covers time queries, task
+# management, and other baseline needs without requiring a Cognition call.
+BASELINE_TAGS: frozenset[str] = frozenset({
+    "system.read",
+    "tasks.control",
+    "tasks.read",
+})
 
 
 class Harness:
@@ -202,6 +225,13 @@ class Harness:
         # disponible (le modèle ne doit jamais halluciner son propre runtime).
         runtime_identity = self.active_model_identity()
 
+        # RC1 : récupère ou crée l'objectif conversationnel de cette session
+        # AVANT l'assemblage du contexte — le Working State (relevant_information,
+        # next_checkpoint) doit être visible dans le contexte du tour courant.
+        conv_task = self._get_or_resume_conv_objective(
+            request.session_id, request.input.text or "", state.current_turn
+        )
+
         # Conversation != task execution (§7, §10) : ce tour n'attend jamais
         # une Task de fond et ne la modifie jamais, quelle que soit la
         # décision d'Attention sur cet événement (toujours PROCESS_NOW pour
@@ -213,9 +243,24 @@ class Harness:
         # consigne : "arrête ça" doit pouvoir référer à une tâche active).
         # Mêmes états exclus que tasks.list (Chantier 14) — jamais l'historique
         # terminal complet, jamais un dump inconditionnel (consigne §22).
+        # RC1 : les conv_obj d'AUTRES sessions sont exclues — chaque session
+        # ne voit que son propre Working State, jamais celui d'une autre.
         active_tasks = tuple(
-            t for t in self._tasks.list() if t.state not in _TERMINAL_TASK_STATES_FOR_CONTEXT
+            t for t in self._tasks.list()
+            if t.state not in _TERMINAL_TASK_STATES_FOR_CONTEXT
+            and not (
+                isinstance(t.checkpoint, dict)
+                and t.checkpoint.get("kind") == _CONV_OBJ_KIND
+                and (t.owner is None or t.owner.session_id != request.session_id)
+            )
         )
+
+        # RC1 : tâches conversationnelles récemment complétées pour la
+        # fenêtre de contexte « récemment terminé » (3 tours).
+        recently_completed_conv = self._get_recently_completed_conv(
+            request.session_id, state.current_turn
+        )
+
         context = assemble(
             session_id=request.session_id,
             channel_scope=channel_scope,
@@ -225,6 +270,8 @@ class Harness:
             query_text=request.input.text or "",
             active_tasks=active_tasks,
             runtime_identity=runtime_identity,
+            recently_completed_conv_tasks=recently_completed_conv,
+            current_turn=state.current_turn,
         )
         self._last_context[request.session_id] = context
 
@@ -244,9 +291,20 @@ class Harness:
             self._emit_turn_failed(state, request.correlation_id)
             return state
 
-        response_text = self._run_agentic_loop(request, state, context)
+        # RC2 : sélection pre-loop des capability tags — READ-ONLY sur RC1 state.
+        # conv_task et recently_completed_conv sont lus ici, jamais modifiés.
+        selected_tags = self._select_capability_tags(
+            request, conv_task, recently_completed_conv
+        )
+
+        response_text = self._run_agentic_loop(request, state, context, selected_tags)
         self._last_response_text[request.session_id] = response_text
         self._remember_assistant_turn(request.session_id, channel_scope, response_text)
+
+        # RC1 : post-loop — promotion d'evidence + Cognition + checkpoint/pause
+        # du Working State. Appelé APRÈS _remember_assistant_turn car Cognition
+        # lit le texte du tour (jamais avant que la réponse ne soit stabilisée).
+        self._finalize_conversational_objective(request, state, conv_task)
 
         # AWAITING_USER_INPUT (confirmation Safety en attente, voir
         # confirm_pending() ci-dessous) est un arrêt volontaire du tour —
@@ -296,6 +354,210 @@ class Harness:
     def last_context(self, session_id: str):
         return self._last_context.get(session_id)
 
+    # ------------------------------------------------------------------
+    # RC1 — Conversational Objective Working State
+    # Harness SEUL écrit dans TaskRegistry. Cognition PROPOSE (post-loop
+    # uniquement). REPLACE ne se produit jamais sur erreur de Cognition.
+    # ------------------------------------------------------------------
+
+    def _get_or_resume_conv_objective(
+        self, session_id: str, user_text: str, current_turn: int
+    ) -> "Task | None":
+        for t in self._tasks.list():
+            if (
+                t.state == TaskState.PAUSED
+                and isinstance(t.checkpoint, dict)
+                and t.checkpoint.get("kind") == _CONV_OBJ_KIND
+                and t.owner is not None
+                and t.owner.session_id == session_id
+            ):
+                if t.checkpoint.get("turns_active", 0) >= _TASK_EXPIRATION_UNTOUCHED_TURNS:
+                    self._tasks.cancel(t.id)
+                    break
+                self._tasks.resume(t.id)
+                return self._tasks.get(t.id)
+        return self._create_conv_objective(session_id, user_text)
+
+    def _create_conv_objective(self, session_id: str, user_text: str) -> "Task":
+        task = self._tasks.create(
+            objective=user_text[:120],
+            owner=TaskOwner(channel="conversation", session_id=session_id),
+            correlation_id=new_id("conv"),
+        )
+        task = self._tasks.start(task.id)
+        self._tasks.checkpoint(task.id, {
+            "kind": _CONV_OBJ_KIND,
+            "objective": user_text[:120],
+            "relevant_information": [],
+            "last_domain_of_activity": None,
+            "turns_active": 0,
+            "completed_at_turn": None,
+            "result_summary": None,
+            "next_checkpoint": None,
+        })
+        return self._tasks.get(task.id)
+
+    def _get_recently_completed_conv(
+        self, session_id: str, current_turn: int
+    ) -> "tuple[Task, ...]":
+        window = _RECENTLY_COMPLETED_OBJECTIVE_WINDOW_TURNS
+        result = []
+        for t in self._tasks.list():
+            if (
+                t.state == TaskState.COMPLETED
+                and isinstance(t.checkpoint, dict)
+                and t.checkpoint.get("kind") == _CONV_OBJ_KIND
+                and t.owner is not None
+                and t.owner.session_id == session_id
+            ):
+                completed_at = t.checkpoint.get("completed_at_turn")
+                if completed_at is not None and (current_turn - completed_at) <= window:
+                    result.append(t)
+        return tuple(result)
+
+    def _finalize_conversational_objective(
+        self, request: "HarnessRequest", state: "HarnessState", conv_task: "Task | None"
+    ) -> None:
+        """Post-loop: promote evidence, call Cognition if needed, checkpoint+pause."""
+        if conv_task is None:
+            return
+        session_id = request.session_id
+        current_turn = state.current_turn
+        trace = self._last_tool_trace.get(session_id, [])
+        ckpt = conv_task.checkpoint or {}
+
+        relevant_info = list(ckpt.get("relevant_information", []))
+        last_domain = ckpt.get("last_domain_of_activity")
+        for entry in trace:
+            if entry.get("status") == "success":
+                evidence = entry.get("evidence") or {}
+                if evidence:
+                    relevant_info.append({
+                        "turn": current_turn,
+                        "source": entry.get("tool_name", "unknown"),
+                        "content": json.dumps(
+                            evidence, ensure_ascii=False, default=str
+                        )[:200],
+                    })
+                tool_name = entry.get("tool_name", "")
+                if "." in tool_name:
+                    last_domain = tool_name.split(".")[0]
+        if len(relevant_info) > _RELEVANT_INFO_CAP:
+            relevant_info = relevant_info[-_RELEVANT_INFO_CAP:]
+
+        turns_active = ckpt.get("turns_active", 0) + 1
+        objective = ckpt.get("objective", request.input.text or "")
+        next_checkpoint = ckpt.get("next_checkpoint")
+
+        if turns_active > 1:
+            proposal = self._classify_conv_objective_relation(
+                request, state, conv_task, trace
+            )
+            if proposal.relation == "REPLACE" and proposal.proposed_new_objective:
+                self._tasks.checkpoint(conv_task.id, {
+                    "kind": _CONV_OBJ_KIND,
+                    "objective": objective,
+                    "relevant_information": relevant_info,
+                    "last_domain_of_activity": last_domain,
+                    "turns_active": turns_active,
+                    "completed_at_turn": current_turn,
+                    "result_summary": "replaced by new objective",
+                    "next_checkpoint": next_checkpoint,
+                })
+                self._tasks.complete(conv_task.id, {"summary": "replaced"})
+                new_task = self._create_conv_objective(
+                    session_id, proposal.proposed_new_objective
+                )
+                if proposal.proposed_next_checkpoint:
+                    new_ckpt = dict(new_task.checkpoint)
+                    new_ckpt["next_checkpoint"] = proposal.proposed_next_checkpoint
+                    self._tasks.checkpoint(new_task.id, new_ckpt)
+                self._tasks.pause(new_task.id)
+                return
+            if proposal.relation == "CORRECT" and proposal.proposed_new_objective:
+                objective = proposal.proposed_new_objective[:120]
+            if proposal.proposed_next_checkpoint:
+                next_checkpoint = proposal.proposed_next_checkpoint
+
+        self._tasks.checkpoint(conv_task.id, {
+            "kind": _CONV_OBJ_KIND,
+            "objective": objective,
+            "relevant_information": relevant_info,
+            "last_domain_of_activity": last_domain,
+            "turns_active": turns_active,
+            "completed_at_turn": None,
+            "result_summary": None,
+            "next_checkpoint": next_checkpoint,
+        })
+        self._tasks.pause(conv_task.id)
+
+    def _classify_conv_objective_relation(
+        self,
+        request: "HarnessRequest",
+        state: "HarnessState",
+        conv_task: "Task",
+        trace: list[dict],
+    ) -> ObjectiveRelationProposal:
+        ckpt = conv_task.checkpoint or {}
+        rel_info = ckpt.get("relevant_information", [])
+        summary_entries = rel_info[-5:] if len(rel_info) > 5 else rel_info
+        summary = "; ".join(
+            e.get("content", "") for e in summary_entries if e.get("content")
+        )
+
+        active_ctx = ActiveTaskContext(
+            objective=ckpt.get("objective", ""),
+            relevant_information_summary=summary[:500],
+            last_domain_of_activity=ckpt.get("last_domain_of_activity"),
+            turns_since_created=ckpt.get("turns_active", 0),
+        )
+
+        domains = list({
+            t.get("tool_name", "").split(".")[0]
+            for t in trace if "." in t.get("tool_name", "")
+        })
+        tools = list({t.get("tool_name", "") for t in trace if t.get("tool_name")})
+        action_or_read = "INFO"
+        for entry in trace:
+            tool_def = self._tools_registry.get(entry.get("tool_name", ""))
+            if tool_def is None:
+                continue
+            if any("interact" in tag for tag in tool_def.capability_tags):
+                action_or_read = "ACTION"
+                break
+            if action_or_read == "INFO" and any(
+                "read" in tag or "browser" in tag for tag in tool_def.capability_tags
+            ):
+                action_or_read = "READ"
+
+        trace_summary = TraceSummary(
+            domains_touched=domains,
+            tools_called=tools,
+            action_or_read=action_or_read,
+        )
+
+        recently_completed_ctx = None
+        recently_completed = self._get_recently_completed_conv(
+            request.session_id, state.current_turn
+        )
+        if recently_completed:
+            rc = recently_completed[0]
+            rc_ckpt = rc.checkpoint or {}
+            completed_at = rc_ckpt.get("completed_at_turn", state.current_turn)
+            recently_completed_ctx = RecentlyCompletedContext(
+                objective=rc_ckpt.get("objective", rc.objective),
+                result_summary=(rc_ckpt.get("result_summary") or "")[:200],
+                turns_since_completed=state.current_turn - completed_at,
+            )
+
+        req = ObjectiveRelationRequest(
+            user_text=request.input.text or "",
+            active_task=active_ctx,
+            trace_summary=trace_summary,
+            recently_completed_objective=recently_completed_ctx,
+        )
+        return classify_objective_relation(req, self._model_registry, request.correlation_id)
+
     def last_tool_trace(self, session_id: str) -> list[dict]:
         """Observabilité (consigne §32) : objectif -> tool discovery -> tool
         call -> execution -> result -> verification, reconstructible sans
@@ -320,15 +582,81 @@ class Harness:
     # OBSERVE -> VERIFY -> CONTINUE/REPLAN/ESCALATE. Bornée, jamais infinie.
     # ------------------------------------------------------------------
 
-    def _discover_tool_schemas(self) -> list[dict]:
+    def _discover_tool_schemas(self, selected_tags: list[str] | None = None) -> list[dict]:
         """Le modèle ne reçoit PAS forcément tous les outils (consigne §7) —
-        ici, discovery sur l'union des capability_tags réellement enregistrés
-        (raya/tools/registry.py::all_capability_tags), jamais un routage texte
-        codé en dur par mot-clé (consigne §22)."""
-        tags = self._tools_registry.all_capability_tags()
+        discovery sur les capability_tags sélectionnés par RC2 (pre-loop),
+        ou sur l'union complète si aucune sélection fournie (fallback = comportement
+        courant). Jamais un routage texte codé en dur par mot-clé (consigne §22)."""
+        tags = selected_tags if selected_tags is not None else self._tools_registry.all_capability_tags()
         if not tags:
             return []
         return [to_dict(t) for t in discover_tools(self._tools_registry, tags)]
+
+    def _select_capability_tags(
+        self,
+        request: "HarnessRequest",
+        conv_task: "Task | None",
+        recently_completed_conv: "tuple[Task, ...]",
+    ) -> list[str]:
+        """RC2 pre-loop: select capability tags via one Cognition classification call.
+
+        Returns a list of tags to pass to _discover_tool_schemas().
+        All failure paths fall back to all_capability_tags() (current behavior).
+        NEVER modifies conv_task or any RC1 state — read-only.
+        """
+        all_tags = self._tools_registry.all_capability_tags()
+
+        # Gate: if the entire registry is already just baseline, skip selector.
+        non_baseline = set(all_tags) - BASELINE_TAGS
+        if not non_baseline:
+            return list(BASELINE_TAGS & set(all_tags))
+
+        # Extract RC1 Working State — read-only
+        objective_text: str | None = None
+        last_domain: str | None = None
+        next_checkpoint_domain: str | None = None
+        if conv_task is not None:
+            ckpt = conv_task.checkpoint or {}
+            objective_text = ckpt.get("objective") or None
+            last_domain = ckpt.get("last_domain_of_activity") or None
+            next_cp = ckpt.get("next_checkpoint")
+            if isinstance(next_cp, dict):
+                next_checkpoint_domain = next_cp.get("domain") or None
+
+        recently_completed_objective: str | None = None
+        if recently_completed_conv:
+            latest = max(
+                recently_completed_conv,
+                key=lambda t: (t.checkpoint or {}).get("completed_at_turn", 0),
+            )
+            recently_completed_objective = (latest.checkpoint or {}).get("objective") or None
+
+        sel_request = CapabilitySelectionRequest(
+            user_text=request.input.text or "",
+            available_tags=all_tags,
+            objective_text=objective_text,
+            last_domain=last_domain,
+            next_checkpoint_domain=next_checkpoint_domain,
+            recently_completed_objective=recently_completed_objective,
+        )
+
+        try:
+            proposal = select_capabilities(
+                sel_request, self._model_registry, request.correlation_id
+            )
+        except Exception:
+            proposal = None
+
+        # Confidence policy: low → full fallback (same as None)
+        if proposal is None or proposal.confidence == "low":
+            return all_tags
+
+        # Merge BASELINE + proposal, intersect with registered to drop hallucinated tags
+        selected = (BASELINE_TAGS | set(proposal.selected_tags)) & set(all_tags)
+        if not selected:
+            return all_tags
+
+        return sorted(selected)
 
     def _promote_observations_and_verify(self, requested, tool_result, outcome: VerificationOutcome) -> VerificationOutcome:
         """Phase 7 §5-9 : Device Agent -> Tool -> Harness -> World State,
@@ -572,7 +900,13 @@ class Harness:
             "sans confirmation de résultat."
         )
 
-    def _run_agentic_loop(self, request: HarnessRequest, state: HarnessState, context) -> str:
+    def _run_agentic_loop(
+        self,
+        request: HarnessRequest,
+        state: HarnessState,
+        context,
+        selected_tags: list[str] | None = None,
+    ) -> str:
         context_budget_tokens = context.budget_tokens
         # BUG CORRIGÉ (stabilisation pré-Phase 7) : le Context assemblé par
         # context_engine.assemble() (identité RAYA, runtime/modèle actif,
@@ -586,7 +920,8 @@ class Harness:
         if system_prompt:
             messages.append(Message(role="system", content=[ContentPart(type="text", value=system_prompt)]))
         messages.append(Message(role="user", content=[ContentPart(type="text", value=request.input.text or "")]))
-        available_tools = self._discover_tool_schemas()
+        # RC2: use pre-selected tags when provided; None = full discovery (current behavior)
+        available_tools = self._discover_tool_schemas(selected_tags)
         trace: list[dict] = []
         loop_key = f"{request.session_id}:{state.current_turn}"
         # Anti-boucle par ÉTAT (Phase 4 §10) — complémentaire à LoopDetector

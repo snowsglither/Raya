@@ -85,19 +85,60 @@ def _task_state_section(task: Task) -> ContextSection:
 # conversation (0.95) mais au-dessus du score par défaut des faits World
 # State/Memory les moins pertinents.
 _ACTIVE_TASK_RANK_SCORE = 0.8
+_CONV_OBJ_KIND = "conversational_objective"
 
 
 def _active_tasks_sections(active_tasks: tuple[Task, ...], exclude_task_id: str | None) -> list[ContextSection]:
-    return [
-        ContextSection(
+    sections = []
+    for t in active_tasks:
+        if t.id == exclude_task_id:
+            continue
+        content: dict = {
+            "task_id": t.id,
+            "objective": t.objective,
+            "state": t.state.value,
+            "not_before": t.not_before,
+        }
+        if isinstance(t.checkpoint, dict) and t.checkpoint.get("kind") == _CONV_OBJ_KIND:
+            ckpt = t.checkpoint
+            content["objective"] = ckpt.get("objective") or t.objective
+            rel_info = ckpt.get("relevant_information") or []
+            last_5 = rel_info[-5:] if len(rel_info) > 5 else rel_info
+            content["is_conversational_objective"] = True
+            content["objective_state"] = {
+                "relevant_information": last_5,
+                "next_checkpoint": ckpt.get("next_checkpoint"),
+            }
+        sections.append(ContextSection(
             kind=SectionKind.ACTIVE_TASKS,
-            content={"task_id": t.id, "objective": t.objective, "state": t.state.value, "not_before": t.not_before},
+            content=content,
             provenance="tasks:active",
             rank_score=_ACTIVE_TASK_RANK_SCORE,
-        )
-        for t in active_tasks
-        if t.id != exclude_task_id
-    ]
+        ))
+    return sections
+
+
+def _recently_completed_conv_section(task: Task, current_turn: int) -> ContextSection | None:
+    ckpt = task.checkpoint
+    if not isinstance(ckpt, dict):
+        return None
+    completed_at = ckpt.get("completed_at_turn")
+    if completed_at is None:
+        return None
+    return ContextSection(
+        kind=SectionKind.ACTIVE_TASKS,
+        content={
+            "task_id": task.id,
+            "objective": ckpt.get("objective", task.objective),
+            "state": "completed",
+            "is_conversational_objective": True,
+            "recently_completed": True,
+            "turns_ago": current_turn - completed_at,
+            "result_summary": ckpt.get("result_summary"),
+        },
+        provenance="tasks:recently_completed",
+        rank_score=0.7,
+    )
 
 
 def _world_state_sections(world_state: WorldStateStore, domains: tuple[str, ...]) -> list[ContextSection]:
@@ -294,6 +335,8 @@ def assemble(
     tools_registry: object | None = None,
     capability_tags: tuple[str, ...] = (),
     runtime_identity: dict | None = None,
+    recently_completed_conv_tasks: tuple[Task, ...] = (),
+    current_turn: int = 0,
 ) -> Context:
     candidates: list[ContextSection] = [_system_rules_section(runtime_identity)]
 
@@ -301,6 +344,11 @@ def assemble(
         candidates.append(_task_state_section(task))
 
     candidates.extend(_active_tasks_sections(active_tasks, exclude_task_id=task.id if task is not None else None))
+
+    for rc_task in recently_completed_conv_tasks:
+        section = _recently_completed_conv_section(rc_task, current_turn)
+        if section is not None:
+            candidates.append(section)
 
     conv_section = _conversation_history_section(memory, channel_scope)
     if conv_section is not None:

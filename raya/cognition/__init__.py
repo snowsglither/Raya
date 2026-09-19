@@ -3,7 +3,20 @@ incertitude, vérification, recovery/replanning — jamais d'exécution directe
 d'outil/device, jamais un second Harness (vérifié par le lint architectural).
 """
 
+from .capability_selection import (
+    CapabilitySelectionProposal,
+    CapabilitySelectionRequest,
+    select_capabilities,
+)
 from .intent import Intent, derive_intent
+from .objective_relation import (
+    ActiveTaskContext,
+    ObjectiveRelationProposal,
+    ObjectiveRelationRequest,
+    RecentlyCompletedContext,
+    TraceSummary,
+    classify_objective_relation,
+)
 from .planning import build_plan, replan_step
 from .reasoning import not_implemented_error
 from .recovery import LoopDetector, RecoveryAction
@@ -18,11 +31,20 @@ from .verification import (
 )
 
 __all__ = [
+    "ActiveTaskContext",
+    "CapabilitySelectionProposal",
+    "CapabilitySelectionRequest",
     "Intent",
     "LoopDetector",
+    "ObjectiveRelationProposal",
+    "ObjectiveRelationRequest",
     "RecoveryAction",
+    "RecentlyCompletedContext",
+    "TraceSummary",
     "VerificationOutcome",
     "build_plan",
+    "classify_objective_relation",
+    "select_capabilities",
     "combine_outcomes",
     "derive_intent",
     "detect_no_progress",
